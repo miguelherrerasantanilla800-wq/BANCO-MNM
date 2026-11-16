@@ -82,6 +82,7 @@ services:
         condition: on-failure
 
   namenode:
+    hostname: namenode
     image: ${HADOOP_IMAGE:-bancomnm/hadoop:local}
     build: ./hadoop
     command: ["bash", "-c", "if [ ! -f /hadoop/dfs/name/current/VERSION ]; then /opt/hadoop/bin/hdfs namenode -format -force -nonInteractive; fi; exec /opt/hadoop/bin/hdfs namenode"]
@@ -89,7 +90,6 @@ services:
       - "127.0.0.1:9870:9870"
     volumes:
       - namenode_data:/hadoop/dfs/name
-      - airflow_data:/opt/airflow/data
       - ./mapreduce:/mapreduce:ro
       - ./hadoop/core-site.xml:/opt/hadoop/etc/hadoop/core-site.xml:ro
       - ./hadoop/hdfs-site.xml:/opt/hadoop/etc/hadoop/hdfs-site.xml:ro
@@ -221,6 +221,17 @@ services:
       restart_policy:
         condition: on-failure
 
+  airflow-data-init:
+    image: ${AIRFLOW_IMAGE:-bancomnm/airflow:local}
+    user: "0:0"
+    entrypoint: ["bash", "-c"]
+    command:
+      - |
+        mkdir -p /opt/airflow/data/bronze /opt/airflow/data/silver /opt/airflow/data/gold
+        chown -R 50000:0 /opt/airflow/data
+    volumes:
+      - airflow_data:/opt/airflow/data
+
   airflow-init:
     image: ${AIRFLOW_IMAGE:-bancomnm/airflow:local}
     build:
@@ -246,6 +257,8 @@ services:
     depends_on:
       airflow-db:
         condition: service_healthy
+      airflow-data-init:
+        condition: service_completed_successfully
     command: ["bash", "-c", "airflow db migrate && if airflow users list | grep -q \"$${AIRFLOW_ADMIN_USERNAME}\"; then echo 'Airflow admin already exists'; else airflow users create --username \"$${AIRFLOW_ADMIN_USERNAME}\" --password \"$${AIRFLOW_ADMIN_PASSWORD}\" --firstname Admin --lastname BancoMNM --role Admin --email admin@bancomnm.local; fi"]
     deploy:
       restart_policy:
@@ -306,6 +319,61 @@ services:
       - ./notebooks:/workspace
       - airflow_data:/data:ro
 
+  docker-exporter:
+    build:
+      context: ./monitoring
+      dockerfile: Dockerfile
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    expose:
+      - "9101"
+    restart: unless-stopped
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    privileged: true
+    command:
+      - --docker_only=true
+      - --housekeeping_interval=15s
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /dev/disk:/dev/disk:ro
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    depends_on:
+      - cadvisor
+      - docker-exporter
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   namenode_data:
@@ -316,3 +384,5 @@ volumes:
   historyserver_data:
   airflow_postgres_data:
   airflow_data:
+  prometheus_data:
+  grafana_data:

@@ -42,9 +42,12 @@ $secretValues = [ordered]@{
     AIRFLOW_WEBSERVER_SECRET_KEY = New-UrlSafeSecret -ByteCount 48
     AIRFLOW_ADMIN_USERNAME = "admin"
     AIRFLOW_ADMIN_PASSWORD = New-UrlSafeSecret
+    GRAFANA_ADMIN_USER = "admin"
+    GRAFANA_ADMIN_PASSWORD = New-UrlSafeSecret
 }
 
 $adminPasswordGenerated = $false
+$grafanaPasswordGenerated = $false
 foreach ($entry in $secretValues.GetEnumerator()) {
     $key = [regex]::Escape($entry.Key)
     $index = -1
@@ -71,6 +74,9 @@ foreach ($entry in $secretValues.GetEnumerator()) {
 
     if ($entry.Key -eq "AIRFLOW_ADMIN_PASSWORD") {
         $adminPasswordGenerated = $true
+    }
+    if ($entry.Key -eq "GRAFANA_ADMIN_PASSWORD") {
+        $grafanaPasswordGenerated = $true
     }
 }
 
@@ -117,4 +123,11 @@ if ($adminPasswordGenerated) {
     $adminLine = $lines | Where-Object { $_ -match "^AIRFLOW_ADMIN_PASSWORD=" } | Select-Object -Last 1
     $adminPassword = ($adminLine -split "=", 2)[1]
     Write-Host "Airflow login: admin / $adminPassword"
+}
+if ($grafanaPasswordGenerated) {
+    $grafanaUserLine = $lines | Where-Object { $_ -match "^GRAFANA_ADMIN_USER=" } | Select-Object -Last 1
+    $grafanaPasswordLine = $lines | Where-Object { $_ -match "^GRAFANA_ADMIN_PASSWORD=" } | Select-Object -Last 1
+    $grafanaUser = ($grafanaUserLine -split "=", 2)[1]
+    $grafanaPassword = ($grafanaPasswordLine -split "=", 2)[1]
+    Write-Host "Grafana login: $grafanaUser / $grafanaPassword"
 }

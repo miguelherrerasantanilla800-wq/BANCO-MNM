@@ -4,12 +4,13 @@ Aplicación bancaria educativa con FastAPI, PostgreSQL y Nginx, más una platafo
 
 ## Arquitectura
 
-| Componente | Servicios                                                                               | Función                                       |
-| ---------- | --------------------------------------------------------------------------------------- | ---------------------------------------------- |
-| Banca      | `nginx`, `auth`, `bank`, `database`                                             | Frontend, APIs y datos transaccionales         |
-| Hadoop     | `namenode`, 2 `datanode`, `resourcemanager`, 2 `nodemanager`, `historyserver` | HDFS y ejecución distribuida MapReduce        |
-| Airflow    | `airflow-webserver`, `airflow-scheduler`, `airflow-db`                            | Orquesta Bronze → Silver → Gold y controla calidad |
-| Notebook   | `notebook` (perfil opcional `analysis`)                                            | Análisis exploratorio de Silver y Gold |
+| Componente     | Servicios                                                                               | Función                                             |
+| -------------- | --------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| Banca          | `nginx`, `auth`, `bank`, `database`                                             | Frontend, APIs y datos transaccionales               |
+| Hadoop         | `namenode`, 2 `datanode`, `resourcemanager`, 2 `nodemanager`, `historyserver` | HDFS y ejecución distribuida MapReduce              |
+| Airflow        | `airflow-webserver`, `airflow-scheduler`, `airflow-db`                            | Orquesta Bronze → Silver → Gold y controla calidad |
+| Notebook       | `notebook` (perfil opcional `analysis`)                                             | Análisis exploratorio de Silver y Gold              |
+| Observabilidad | `cadvisor`, `prometheus`, `grafana`                                               | Métricas de recursos de los contenedores            |
 
 El dataset fuente es un arreglo JSON de 1.000.000 de objetos. **La arquitectura Medallón son directorios de datos en HDFS; no es el notebook.** Airflow dirige la ETL, Hadoop/HDFS almacena las capas, y el notebook se usa únicamente para el análisis exploratorio de los datos ya procesados.
 
@@ -75,8 +76,16 @@ docker compose down -v
 | HDFS NameNode        | http://localhost:9870      | Estado de HDFS                               |
 | YARN ResourceManager | http://localhost:8088      | Estado de jobs/recursos                      |
 | MapReduce History    | http://localhost:19888     | Historial de jobs                            |
+| Prometheus           | http://localhost:9090      | Recolección y consulta de métricas         |
+| Grafana              | http://localhost:3000      | Usuario/contraseña configurados en `.env` |
 
 Los servicios de Hadoop y las APIs se publican solo en loopback en Compose; la interfaz bancaria usa el puerto `HTTP_PORT` (8080 por defecto).
+
+### Observabilidad de contenedores
+
+Compose inicia cAdvisor, Prometheus y Grafana junto con el resto de la plataforma. cAdvisor recolecta métricas de CPU, memoria, red y filesystem; Prometheus las conserva durante 15 días. Grafana carga automáticamente la fuente Prometheus y el dashboard **Infrastructure → Contenedores Docker**.
+
+Configura `GRAFANA_ADMIN_USER` y `GRAFANA_ADMIN_PASSWORD` en `.env` antes de iniciar el stack. Las interfaces de Grafana y Prometheus solo escuchan en `localhost`; no expongas cAdvisor ni estos puertos directamente a Internet. Para arrancar o actualizar los servicios ejecuta `.\start.ps1`.
 
 El frontend ofrece resumen de saldo, ingresos y egresos, lecturas descriptivas del historial, gráficos y movimientos recientes. Sus términos y aviso de privacidad son informativos para el prototipo: no existe canal de atención de derechos ni registro de autorización legal. No uses datos reales; antes de producción se deben definir el responsable, sus datos de contacto y los procesos de protección de datos, con revisión jurídica.
 
@@ -95,6 +104,8 @@ El DAG sigue estas capas:
 - **Silver:** `/bancomnm/silver/transacciones/dataset.jsonl`, normalizada y validada en streaming. El reporte de calidad queda en `/bancomnm/silver/quality_report.json`; los datos rechazados se conservan en `/bancomnm/silver/quarantine/`. Si hay filas inválidas, el DAG falla antes de ejecutar Gold.
 - **Gold:** resultados MapReduce en `/bancomnm/gold/job1_categoria`, `job2_fraude`, `job3_clientes` y `job4_mensual`.
 - **Dashboard:** el DAG valida los conteos de Gold, prepara un resumen pequeño y lo publica transaccionalmente en PostgreSQL. El panel Analista muestra la calidad de los 1.000.000 de registros, monto aprobado por categoría, fraude por ciudad, actividad mensual por canal y los 10 clientes con mayor monto aprobado. Es analítica global del dataset, no información personal de cuentas bancarias.
+
+Compose prepara los permisos del volumen compartido `airflow_data` para el usuario de Airflow antes de iniciar el scheduler; no elimines ese volumen si quieres conservar Silver y Gold para el notebook.
 
 Consulta las capas y los agregados desde PowerShell:
 
@@ -153,6 +164,8 @@ docker stack rm bancomnm
 ```
 
 Esto es una configuración educativa de nodo único para los servicios con estado, no alta disponibilidad. Para distribuir HDFS entre nodos, configura almacenamiento persistente accesible por nodo y ajusta las restricciones de colocación. No publiques los puertos de Hadoop/Airflow ni uses esta configuración sin TLS, gestión de secretos y controles de red en producción.
+
+La observabilidad cAdvisor/Prometheus/Grafana se integra en Docker Compose; el archivo `docker-stack.yml` no despliega esos servicios en Swarm.
 
 ## Desarrollo y pruebas
 
