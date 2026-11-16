@@ -87,9 +87,10 @@ $images = @{
     APP_IMAGE = "bancomnm/app:local"
     HADOOP_IMAGE = "bancomnm/hadoop:local"
     AIRFLOW_IMAGE = "bancomnm/airflow:local"
+    MONITORING_IMAGE = "bancomnm/monitoring:local"
 }
 foreach ($line in $lines) {
-    if ($line -match "^(APP_IMAGE|HADOOP_IMAGE|AIRFLOW_IMAGE)=(.*)$") {
+    if ($line -match "^(APP_IMAGE|HADOOP_IMAGE|AIRFLOW_IMAGE|MONITORING_IMAGE)=(.*)$") {
         $images[$matches[1]] = $matches[2]
     }
 }

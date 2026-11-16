@@ -3,20 +3,85 @@ version: "3.8"
 services:
   database:
     image: postgres:16-alpine
+    user: "70:70"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-mnm}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
       POSTGRES_DB: auth_db
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./database/init:/docker-entrypoint-initdb.d:ro
+    configs:
+      - source: database_init
+        target: /docker-entrypoint-initdb.d/01-create-databases.sh
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d auth_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+        window: 120s
+      update_config:
+        parallelism: 1
+        order: stop-first
+        failure_action: rollback
+        monitor: 60s
+      rollback_config:
+        parallelism: 1
+        order: stop-first
+
+  database-backup:
+    image: postgres:16-alpine
+    user: "70:70"
+    environment:
+      PGHOST: database
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_USER:-mnm}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    command:
+      - sh
+      - -ec
+      - |
+        umask 077
+        while true; do
+          until pg_isready -h "$${PGHOST}" -p "$${PGPORT}" -U "$${PGUSER}" -d auth_db; do
+            echo "PostgreSQL is not ready; retrying backup connection" >&2
+            sleep 15
+          done
+          stamp=$$(date -u +%Y%m%dT%H%M%SZ)
+          auth_tmp="/backups/auth_db-$${stamp}.dump.tmp"
+          bank_tmp="/backups/banco_db-$${stamp}.dump.tmp"
+          if pg_dump -Fc -d auth_db --file "$${auth_tmp}" \
+              && pg_dump -Fc -d banco_db --file "$${bank_tmp}" \
+              && pg_restore --list "$${auth_tmp}" >/dev/null \
+              && pg_restore --list "$${bank_tmp}" >/dev/null; then
+            mv "$${auth_tmp}" "/backups/auth_db-$${stamp}.dump"
+            mv "$${bank_tmp}" "/backups/banco_db-$${stamp}.dump"
+            find /backups -type f -name '*.dump' -mtime +7 -delete
+            echo "Database backup completed at $${stamp}"
+            sleep 21600
+          else
+            rm -f "$${auth_tmp}" "$${bank_tmp}"
+            echo "Database backup failed; retrying in one minute" >&2
+            sleep 60
+          fi
+        done
+    volumes:
+      - database_backups:/backups
+    configs:
+      - source: database_restore
+        target: /opt/restore.sh
     networks: [backend]
     deploy:
       replicas: 1
-      placement:
-        constraints: [node.labels.bancomnm-data == true]
       restart_policy:
-        condition: on-failure
+        condition: any
+        delay: 10s
+        window: 120s
 
   auth:
     image: ${APP_IMAGE:-bancomnm/app:local}
@@ -27,11 +92,28 @@ services:
       TOKEN_MINUTES: ${TOKEN_MINUTES:-60}
       SEED_DEMO_DATA: ${SEED_DEMO_DATA:-true}
     networks: [backend]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
     deploy:
-      replicas: 2
+      replicas: 3
+      placement:
+        constraints: [node.platform.os == linux]
+        max_replicas_per_node: 1
+        preferences:
+          - spread: node.labels.bancomnm.zone
       restart_policy:
-        condition: on-failure
+        condition: any
+        delay: 5s
+        window: 120s
       update_config:
+        parallelism: 1
+        order: start-first
+        failure_action: rollback
+        monitor: 30s
+      rollback_config:
         parallelism: 1
         order: start-first
 
@@ -44,31 +126,64 @@ services:
       ALERT_THRESHOLD: ${ALERT_THRESHOLD:-100000}
       SEED_DEMO_DATA: ${SEED_DEMO_DATA:-true}
     networks: [backend]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8002/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
     deploy:
-      replicas: 2
+      replicas: 3
+      endpoint_mode: vip
+      placement:
+        constraints: [node.platform.os == linux]
+        max_replicas_per_node: 1
+        preferences:
+          - spread: node.labels.bancomnm.zone
       restart_policy:
-        condition: on-failure
+        condition: any
+        delay: 5s
+        window: 120s
       update_config:
+        parallelism: 1
+        order: start-first
+        failure_action: rollback
+        monitor: 30s
+      rollback_config:
         parallelism: 1
         order: start-first
 
   nginx:
-    image: nginx:1.27-alpine
+    image: ${NGINX_IMAGE:?Set NGINX_IMAGE to a published image}
     ports:
       - target: 80
         published: ${HTTP_PORT:-8080}
         protocol: tcp
         mode: ingress
-    volumes:
-      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./frontend:/usr/share/nginx/html:ro
     networks: [backend]
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--output-document=/dev/null", "http://127.0.0.1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
     deploy:
-      replicas: 2
+      replicas: 3
       placement:
-        constraints: [node.labels.bancomnm-data == true]
+        constraints: [node.platform.os == linux]
+        max_replicas_per_node: 1
+        preferences:
+          - spread: node.labels.bancomnm.zone
       restart_policy:
-        condition: on-failure
+        condition: any
+        delay: 5s
+        window: 120s
+      update_config:
+        parallelism: 1
+        order: start-first
+        failure_action: rollback
+        monitor: 30s
+      rollback_config:
+        parallelism: 1
+        order: start-first
 
   namenode:
     image: ${HADOOP_IMAGE:-bancomnm/hadoop:local}
@@ -84,17 +199,26 @@ services:
         target: /opt/hadoop/etc/hadoop/mapred-site.xml
     volumes:
       - namenode_data:/hadoop/dfs/name
-      - airflow_data:/opt/airflow/data
-      - ./mapreduce:/mapreduce:ro
     networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "hdfs dfsadmin -safemode get 2>/dev/null | grep -q 'Safe mode is OFF'"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
     deploy:
       replicas: 1
-      placement:
-        constraints: [node.labels.bancomnm-data == true]
       restart_policy:
-        condition: on-failure
+        condition: any
+        delay: 10s
+        window: 120s
+      update_config:
+        parallelism: 1
+        order: stop-first
+        failure_action: rollback
+        monitor: 60s
 
-  datanode-1:
+  datanode:
     image: ${HADOOP_IMAGE:-bancomnm/hadoop:local}
     command: ["hdfs", "datanode"]
     configs:
@@ -106,35 +230,19 @@ services:
         target: /opt/hadoop/etc/hadoop/yarn-site.xml
       - source: mapred_site
         target: /opt/hadoop/etc/hadoop/mapred-site.xml
-    volumes: [datanode1_data:/hadoop/dfs/data]
+    volumes: [datanode_data:/hadoop/dfs/data]
     networks: [backend]
     deploy:
-      replicas: 1
+      replicas: 3
       placement:
-        constraints: [node.labels.bancomnm-data == true]
+        constraints: [node.platform.os == linux]
+        max_replicas_per_node: 1
+        preferences:
+          - spread: node.labels.bancomnm.zone
       restart_policy:
-        condition: on-failure
-
-  datanode-2:
-    image: ${HADOOP_IMAGE:-bancomnm/hadoop:local}
-    command: ["hdfs", "datanode"]
-    configs:
-      - source: core_site
-        target: /opt/hadoop/etc/hadoop/core-site.xml
-      - source: hdfs_site
-        target: /opt/hadoop/etc/hadoop/hdfs-site.xml
-      - source: yarn_site
-        target: /opt/hadoop/etc/hadoop/yarn-site.xml
-      - source: mapred_site
-        target: /opt/hadoop/etc/hadoop/mapred-site.xml
-    volumes: [datanode2_data:/hadoop/dfs/data]
-    networks: [backend]
-    deploy:
-      replicas: 1
-      placement:
-        constraints: [node.labels.bancomnm-data == true]
-      restart_policy:
-        condition: on-failure
+        condition: any
+        delay: 10s
+        window: 120s
 
   resourcemanager:
     image: ${HADOOP_IMAGE:-bancomnm/hadoop:local}
@@ -151,12 +259,12 @@ services:
     networks: [backend]
     deploy:
       replicas: 1
-      placement:
-        constraints: [node.labels.bancomnm-data == true]
       restart_policy:
-        condition: on-failure
+        condition: any
+        delay: 10s
+        window: 120s
 
-  nodemanager-1:
+  nodemanager:
     image: ${HADOOP_IMAGE:-bancomnm/hadoop:local}
     command: ["yarn", "nodemanager"]
     configs:
@@ -168,35 +276,19 @@ services:
         target: /opt/hadoop/etc/hadoop/yarn-site.xml
       - source: mapred_site
         target: /opt/hadoop/etc/hadoop/mapred-site.xml
-    volumes: [nodemanager1_data:/tmp/hadoop-yarn]
+    volumes: [nodemanager_data:/tmp/hadoop-yarn]
     networks: [backend]
     deploy:
-      replicas: 1
+      replicas: 3
       placement:
-        constraints: [node.labels.bancomnm-data == true]
+        constraints: [node.platform.os == linux]
+        max_replicas_per_node: 1
+        preferences:
+          - spread: node.labels.bancomnm.zone
       restart_policy:
-        condition: on-failure
-
-  nodemanager-2:
-    image: ${HADOOP_IMAGE:-bancomnm/hadoop:local}
-    command: ["yarn", "nodemanager"]
-    configs:
-      - source: core_site
-        target: /opt/hadoop/etc/hadoop/core-site.xml
-      - source: hdfs_site
-        target: /opt/hadoop/etc/hadoop/hdfs-site.xml
-      - source: yarn_site
-        target: /opt/hadoop/etc/hadoop/yarn-site.xml
-      - source: mapred_site
-        target: /opt/hadoop/etc/hadoop/mapred-site.xml
-    volumes: [nodemanager2_data:/tmp/hadoop-yarn]
-    networks: [backend]
-    deploy:
-      replicas: 1
-      placement:
-        constraints: [node.labels.bancomnm-data == true]
-      restart_policy:
-        condition: on-failure
+        condition: any
+        delay: 10s
+        window: 120s
 
   historyserver:
     image: ${HADOOP_IMAGE:-bancomnm/hadoop:local}
@@ -214,25 +306,31 @@ services:
     networks: [backend]
     deploy:
       replicas: 1
-      placement:
-        constraints: [node.labels.bancomnm-data == true]
       restart_policy:
-        condition: on-failure
+        condition: any
+        delay: 10s
+        window: 120s
 
   airflow-db:
     image: postgres:16-alpine
+    user: "70:70"
     environment:
       POSTGRES_USER: airflow
       POSTGRES_PASSWORD: ${AIRFLOW_POSTGRES_PASSWORD:?Set AIRFLOW_POSTGRES_PASSWORD}
       POSTGRES_DB: airflow
     volumes: [airflow_postgres_data:/var/lib/postgresql/data]
     networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     deploy:
       replicas: 1
-      placement:
-        constraints: [node.labels.bancomnm-data == true]
       restart_policy:
-        condition: on-failure
+        condition: any
+        delay: 5s
+        window: 120s
 
   airflow-webserver:
     image: ${AIRFLOW_IMAGE:-bancomnm/airflow:local}
@@ -269,12 +367,18 @@ services:
     volumes:
       - airflow_data:/opt/airflow/data
     networks: [backend]
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
     deploy:
       replicas: 1
-      placement:
-        constraints: [node.labels.bancomnm-data == true]
       restart_policy:
-        condition: on-failure
+        condition: any
+        delay: 10s
+        window: 120s
 
   airflow-scheduler:
     image: ${AIRFLOW_IMAGE:-bancomnm/airflow:local}
@@ -289,20 +393,115 @@ services:
       <<: *airflow_environment
     volumes:
       - airflow_data:/opt/airflow/data
-      - ${DATASET_HOST_PATH:?Set DATASET_HOST_PATH to the JSON dataset}:/data/dataset_transacciones_1_millon.json:ro
+      - dataset_data:/data:ro
     networks: [backend]
     deploy:
       replicas: 1
-      placement:
-        constraints: [node.labels.bancomnm-data == true]
       restart_policy:
-        condition: on-failure
+        condition: any
+        delay: 10s
+        window: 120s
+
+  docker-exporter:
+    image: ${MONITORING_IMAGE:?Set MONITORING_IMAGE to a published image}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [backend]
+    deploy:
+      mode: global
+      endpoint_mode: dnsrr
+      placement:
+        constraints: [node.platform.os == linux]
+      restart_policy:
+        condition: any
+        delay: 5s
+        window: 120s
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    privileged: true
+    command:
+      - --docker_only=true
+      - --housekeeping_interval=15s
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /dev/disk:/dev/disk:ro
+    networks: [backend]
+    deploy:
+      mode: global
+      endpoint_mode: dnsrr
+      placement:
+        constraints: [node.platform.os == linux]
+      restart_policy:
+        condition: any
+        delay: 5s
+        window: 120s
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+    ports:
+      - target: 9090
+        published: 9090
+        protocol: tcp
+        mode: ingress
+    configs:
+      - source: prometheus_swarm
+        target: /etc/prometheus/prometheus.yml
+    volumes:
+      - prometheus_data:/prometheus
+    networks: [backend]
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 10s
+        window: 120s
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - target: 3000
+        published: 3000
+        protocol: tcp
+        mode: ingress
+    configs:
+      - source: grafana_datasource
+        target: /etc/grafana/provisioning/datasources/prometheus.yml
+      - source: grafana_dashboards
+        target: /etc/grafana/provisioning/dashboards/dashboards.yml
+      - source: grafana_containers_dashboard
+        target: /var/lib/grafana/dashboards/containers.json
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks: [backend]
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 10s
+        window: 120s
 
 networks:
   backend:
     driver: overlay
+    attachable: true
 
 configs:
+  database_init:
+    file: ./database/init/01-create-databases.sh
+  database_restore:
+    file: ./database/restore.sh
   core_site:
     file: ./hadoop/core-site.xml
   hdfs_site:
@@ -311,14 +510,69 @@ configs:
     file: ./hadoop/yarn-site.xml
   mapred_site:
     file: ./hadoop/mapred-site.xml
+  prometheus_swarm:
+    file: ./monitoring/prometheus-swarm.yml
+  grafana_datasource:
+    file: ./monitoring/grafana/provisioning/datasources/prometheus.yml
+  grafana_dashboards:
+    file: ./monitoring/grafana/provisioning/dashboards/dashboards.yml
+  grafana_containers_dashboard:
+    file: ./monitoring/grafana/dashboards/containers.json
 
 volumes:
   postgres_data:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: "addr=${NFS_SERVER:?Set NFS_SERVER},nfsvers=4,rw,hard,timeo=600,retrans=2"
+      device: ":${NFS_EXPORT_PATH:?Set NFS_EXPORT_PATH}/postgres"
+  database_backups:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: "addr=${NFS_SERVER:?Set NFS_SERVER},nfsvers=4,rw,hard,timeo=600,retrans=2"
+      device: ":${NFS_EXPORT_PATH:?Set NFS_EXPORT_PATH}/database-backups"
   namenode_data:
-  datanode1_data:
-  datanode2_data:
-  nodemanager1_data:
-  nodemanager2_data:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: "addr=${NFS_SERVER:?Set NFS_SERVER},nfsvers=4,rw,hard,timeo=600,retrans=2"
+      device: ":${NFS_EXPORT_PATH:?Set NFS_EXPORT_PATH}/namenode"
+  datanode_data:
+  nodemanager_data:
   historyserver_data:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: "addr=${NFS_SERVER:?Set NFS_SERVER},nfsvers=4,rw,hard,timeo=600,retrans=2"
+      device: ":${NFS_EXPORT_PATH:?Set NFS_EXPORT_PATH}/historyserver"
   airflow_postgres_data:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: "addr=${NFS_SERVER:?Set NFS_SERVER},nfsvers=4,rw,hard,timeo=600,retrans=2"
+      device: ":${NFS_EXPORT_PATH:?Set NFS_EXPORT_PATH}/airflow-postgres"
   airflow_data:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: "addr=${NFS_SERVER:?Set NFS_SERVER},nfsvers=4,rw,hard,timeo=600,retrans=2"
+      device: ":${NFS_EXPORT_PATH:?Set NFS_EXPORT_PATH}/airflow-data"
+  dataset_data:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: "addr=${NFS_SERVER:?Set NFS_SERVER},nfsvers=4,ro,hard,timeo=600,retrans=2"
+      device: ":${NFS_EXPORT_PATH:?Set NFS_EXPORT_PATH}/datasets"
+  prometheus_data:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: "addr=${NFS_SERVER:?Set NFS_SERVER},nfsvers=4,rw,hard,timeo=600,retrans=2"
+      device: ":${NFS_EXPORT_PATH:?Set NFS_EXPORT_PATH}/prometheus"
+  grafana_data:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: "addr=${NFS_SERVER:?Set NFS_SERVER},nfsvers=4,rw,hard,timeo=600,retrans=2"
+      device: ":${NFS_EXPORT_PATH:?Set NFS_EXPORT_PATH}/grafana"

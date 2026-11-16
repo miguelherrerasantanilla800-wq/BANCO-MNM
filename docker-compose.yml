@@ -76,6 +76,11 @@ services:
         condition: service_healthy
       bank:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--output-document=/dev/null", "http://127.0.0.1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     deploy:
       replicas: 1
       restart_policy:
@@ -320,6 +325,7 @@ services:
       - airflow_data:/data:ro
 
   docker-exporter:
+    image: ${MONITORING_IMAGE:-bancomnm/monitoring:local}
     build:
       context: ./monitoring
       dockerfile: Dockerfile
