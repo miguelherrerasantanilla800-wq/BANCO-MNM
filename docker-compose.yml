@@ -3,7 +3,7 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-mnm}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mnm-local-only}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: auth_db
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -13,12 +13,18 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    deploy:
+      restart_policy:
+        condition: on-failure
 
   auth:
+    image: ${APP_IMAGE:-bancomnm/app:local}
     build: ./app
     command: ["uvicorn", "auth_service.main:app", "--host", "0.0.0.0", "--port", "8001"]
+    ports:
+      - "127.0.0.1:8001:8001"
     environment:
-      AUTH_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-mnm}:${POSTGRES_PASSWORD:-mnm-local-only}@database:5432/auth_db
+      AUTH_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-mnm}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@database:5432/auth_db
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
       TOKEN_MINUTES: ${TOKEN_MINUTES:-60}
       SEED_DEMO_DATA: ${SEED_DEMO_DATA:-true}
@@ -30,12 +36,18 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
 
   bank:
-    build: ./app
+    image: ${APP_IMAGE:-bancomnm/app:local}
     command: ["uvicorn", "bank_service.main:app", "--host", "0.0.0.0", "--port", "8002"]
+    ports:
+      - "127.0.0.1:8002:8002"
     environment:
-      BANK_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-mnm}:${POSTGRES_PASSWORD:-mnm-local-only}@database:5432/banco_db
+      BANK_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-mnm}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@database:5432/banco_db
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
       ALERT_THRESHOLD: ${ALERT_THRESHOLD:-100000}
       SEED_DEMO_DATA: ${SEED_DEMO_DATA:-true}
@@ -47,6 +59,10 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
 
   nginx:
     image: nginx:1.27-alpine
@@ -60,6 +76,243 @@ services:
         condition: service_healthy
       bank:
         condition: service_healthy
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+  namenode:
+    image: ${HADOOP_IMAGE:-bancomnm/hadoop:local}
+    build: ./hadoop
+    command: ["bash", "-c", "if [ ! -f /hadoop/dfs/name/current/VERSION ]; then /opt/hadoop/bin/hdfs namenode -format -force -nonInteractive; fi; exec /opt/hadoop/bin/hdfs namenode"]
+    ports:
+      - "127.0.0.1:9870:9870"
+    volumes:
+      - namenode_data:/hadoop/dfs/name
+      - airflow_data:/opt/airflow/data
+      - ./mapreduce:/mapreduce:ro
+      - ./hadoop/core-site.xml:/opt/hadoop/etc/hadoop/core-site.xml:ro
+      - ./hadoop/hdfs-site.xml:/opt/hadoop/etc/hadoop/hdfs-site.xml:ro
+      - ./hadoop/yarn-site.xml:/opt/hadoop/etc/hadoop/yarn-site.xml:ro
+      - ./hadoop/mapred-site.xml:/opt/hadoop/etc/hadoop/mapred-site.xml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "hdfs dfsadmin -safemode get 2>/dev/null | grep -q 'Safe mode is OFF'"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+    deploy:
+      restart_policy:
+        condition: on-failure
+
+  datanode-1:
+    image: ${HADOOP_IMAGE:-bancomnm/hadoop:local}
+    command: ["hdfs", "datanode"]
+    volumes:
+      - datanode1_data:/hadoop/dfs/data
+      - ./hadoop/core-site.xml:/opt/hadoop/etc/hadoop/core-site.xml:ro
+      - ./hadoop/hdfs-site.xml:/opt/hadoop/etc/hadoop/hdfs-site.xml:ro
+      - ./hadoop/yarn-site.xml:/opt/hadoop/etc/hadoop/yarn-site.xml:ro
+      - ./hadoop/mapred-site.xml:/opt/hadoop/etc/hadoop/mapred-site.xml:ro
+    depends_on:
+      namenode:
+        condition: service_healthy
+    deploy:
+      restart_policy:
+        condition: on-failure
+
+  datanode-2:
+    image: ${HADOOP_IMAGE:-bancomnm/hadoop:local}
+    command: ["hdfs", "datanode"]
+    volumes:
+      - datanode2_data:/hadoop/dfs/data
+      - ./hadoop/core-site.xml:/opt/hadoop/etc/hadoop/core-site.xml:ro
+      - ./hadoop/hdfs-site.xml:/opt/hadoop/etc/hadoop/hdfs-site.xml:ro
+      - ./hadoop/yarn-site.xml:/opt/hadoop/etc/hadoop/yarn-site.xml:ro
+      - ./hadoop/mapred-site.xml:/opt/hadoop/etc/hadoop/mapred-site.xml:ro
+    depends_on:
+      namenode:
+        condition: service_healthy
+    deploy:
+      restart_policy:
+        condition: on-failure
+
+  resourcemanager:
+    image: ${HADOOP_IMAGE:-bancomnm/hadoop:local}
+    command: ["yarn", "resourcemanager"]
+    ports:
+      - "127.0.0.1:8088:8088"
+    volumes:
+      - ./hadoop/core-site.xml:/opt/hadoop/etc/hadoop/core-site.xml:ro
+      - ./hadoop/hdfs-site.xml:/opt/hadoop/etc/hadoop/hdfs-site.xml:ro
+      - ./hadoop/yarn-site.xml:/opt/hadoop/etc/hadoop/yarn-site.xml:ro
+      - ./hadoop/mapred-site.xml:/opt/hadoop/etc/hadoop/mapred-site.xml:ro
+    depends_on:
+      namenode:
+        condition: service_healthy
+    deploy:
+      restart_policy:
+        condition: on-failure
+
+  nodemanager-1:
+    image: ${HADOOP_IMAGE:-bancomnm/hadoop:local}
+    command: ["yarn", "nodemanager"]
+    volumes:
+      - nodemanager1_data:/tmp/hadoop-yarn
+      - ./hadoop/core-site.xml:/opt/hadoop/etc/hadoop/core-site.xml:ro
+      - ./hadoop/hdfs-site.xml:/opt/hadoop/etc/hadoop/hdfs-site.xml:ro
+      - ./hadoop/yarn-site.xml:/opt/hadoop/etc/hadoop/yarn-site.xml:ro
+      - ./hadoop/mapred-site.xml:/opt/hadoop/etc/hadoop/mapred-site.xml:ro
+    depends_on:
+      - resourcemanager
+      - namenode
+    deploy:
+      restart_policy:
+        condition: on-failure
+
+  nodemanager-2:
+    image: ${HADOOP_IMAGE:-bancomnm/hadoop:local}
+    command: ["yarn", "nodemanager"]
+    volumes:
+      - nodemanager2_data:/tmp/hadoop-yarn
+      - ./hadoop/core-site.xml:/opt/hadoop/etc/hadoop/core-site.xml:ro
+      - ./hadoop/hdfs-site.xml:/opt/hadoop/etc/hadoop/hdfs-site.xml:ro
+      - ./hadoop/yarn-site.xml:/opt/hadoop/etc/hadoop/yarn-site.xml:ro
+      - ./hadoop/mapred-site.xml:/opt/hadoop/etc/hadoop/mapred-site.xml:ro
+    depends_on:
+      - resourcemanager
+      - namenode
+    deploy:
+      restart_policy:
+        condition: on-failure
+
+  historyserver:
+    image: ${HADOOP_IMAGE:-bancomnm/hadoop:local}
+    command: ["mapred", "historyserver"]
+    ports:
+      - "127.0.0.1:19888:19888"
+    volumes:
+      - historyserver_data:/hadoop/mapred/history
+      - ./hadoop/core-site.xml:/opt/hadoop/etc/hadoop/core-site.xml:ro
+      - ./hadoop/hdfs-site.xml:/opt/hadoop/etc/hadoop/hdfs-site.xml:ro
+      - ./hadoop/yarn-site.xml:/opt/hadoop/etc/hadoop/yarn-site.xml:ro
+      - ./hadoop/mapred-site.xml:/opt/hadoop/etc/hadoop/mapred-site.xml:ro
+    depends_on:
+      - namenode
+      - resourcemanager
+    deploy:
+      restart_policy:
+        condition: on-failure
+
+  airflow-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: ${AIRFLOW_POSTGRES_PASSWORD:?Set AIRFLOW_POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    deploy:
+      restart_policy:
+        condition: on-failure
+
+  airflow-init:
+    image: ${AIRFLOW_IMAGE:-bancomnm/airflow:local}
+    build:
+      context: .
+      dockerfile: airflow/Dockerfile
+    environment: &airflow_environment
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:?Set AIRFLOW_FERNET_KEY in .env}
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_POSTGRES_PASSWORD:?Set AIRFLOW_POSTGRES_PASSWORD in .env}@airflow-db:5432/airflow
+      BANK_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-mnm}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@database:5432/banco_db
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_WEBSERVER_SECRET_KEY:?Set AIRFLOW_WEBSERVER_SECRET_KEY in .env}
+      AIRFLOW_ADMIN_USERNAME: ${AIRFLOW_ADMIN_USERNAME:-admin}
+      AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:?Set AIRFLOW_ADMIN_PASSWORD in .env}
+      HADOOP_HOME: /opt/hadoop
+      HADOOP_CONF_DIR: /opt/hadoop/etc/hadoop
+      JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+      HDFS_URL: hdfs://namenode:8020
+      DATASET_EXPECTED_RECORDS: ${DATASET_EXPECTED_RECORDS:-1000000}
+    volumes:
+      - airflow_data:/opt/airflow/data
+      - ./dataset_transacciones_1_millon.json:/data/dataset_transacciones_1_millon.json:ro
+    depends_on:
+      airflow-db:
+        condition: service_healthy
+    command: ["bash", "-c", "airflow db migrate && if airflow users list | grep -q \"$${AIRFLOW_ADMIN_USERNAME}\"; then echo 'Airflow admin already exists'; else airflow users create --username \"$${AIRFLOW_ADMIN_USERNAME}\" --password \"$${AIRFLOW_ADMIN_PASSWORD}\" --firstname Admin --lastname BancoMNM --role Admin --email admin@bancomnm.local; fi"]
+    deploy:
+      restart_policy:
+        condition: on-failure
+
+  airflow-webserver:
+    image: ${AIRFLOW_IMAGE:-bancomnm/airflow:local}
+    environment:
+      <<: *airflow_environment
+    ports:
+      - "127.0.0.1:8083:8080"
+    volumes:
+      - airflow_data:/opt/airflow/data
+      - ./dataset_transacciones_1_millon.json:/data/dataset_transacciones_1_millon.json:ro
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    command: ["webserver"]
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    deploy:
+      restart_policy:
+        condition: on-failure
+
+  airflow-scheduler:
+    image: ${AIRFLOW_IMAGE:-bancomnm/airflow:local}
+    environment:
+      <<: *airflow_environment
+    volumes:
+      - airflow_data:/opt/airflow/data
+      - ./dataset_transacciones_1_millon.json:/data/dataset_transacciones_1_millon.json:ro
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      database:
+        condition: service_healthy
+      namenode:
+        condition: service_healthy
+      resourcemanager:
+        condition: service_started
+    command: ["scheduler"]
+    deploy:
+      restart_policy:
+        condition: on-failure
+
+  notebook:
+    build:
+      context: ./notebooks
+      dockerfile: Dockerfile
+    profiles: ["analysis"]
+    ports:
+      - "127.0.0.1:8889:8888"
+    volumes:
+      - ./notebooks:/workspace
+      - airflow_data:/data:ro
 
 volumes:
   postgres_data:
+  namenode_data:
+  datanode1_data:
+  datanode2_data:
+  nodemanager1_data:
+  nodemanager2_data:
+  historyserver_data:
+  airflow_postgres_data:
+  airflow_data:

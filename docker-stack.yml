@@ -1,0 +1,324 @@
+version: "3.8"
+
+services:
+  database:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mnm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      POSTGRES_DB: auth_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init:/docker-entrypoint-initdb.d:ro
+    networks: [backend]
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.labels.bancomnm-data == true]
+      restart_policy:
+        condition: on-failure
+
+  auth:
+    image: ${APP_IMAGE:-bancomnm/app:local}
+    command: ["uvicorn", "auth_service.main:app", "--host", "0.0.0.0", "--port", "8001"]
+    environment:
+      AUTH_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-mnm}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@database:5432/auth_db
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
+      TOKEN_MINUTES: ${TOKEN_MINUTES:-60}
+      SEED_DEMO_DATA: ${SEED_DEMO_DATA:-true}
+    networks: [backend]
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+      update_config:
+        parallelism: 1
+        order: start-first
+
+  bank:
+    image: ${APP_IMAGE:-bancomnm/app:local}
+    command: ["uvicorn", "bank_service.main:app", "--host", "0.0.0.0", "--port", "8002"]
+    environment:
+      BANK_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-mnm}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@database:5432/banco_db
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
+      ALERT_THRESHOLD: ${ALERT_THRESHOLD:-100000}
+      SEED_DEMO_DATA: ${SEED_DEMO_DATA:-true}
+    networks: [backend]
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+      update_config:
+        parallelism: 1
+        order: start-first
+
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - target: 80
+        published: ${HTTP_PORT:-8080}
+        protocol: tcp
+        mode: ingress
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./frontend:/usr/share/nginx/html:ro
+    networks: [backend]
+    deploy:
+      replicas: 2
+      placement:
+        constraints: [node.labels.bancomnm-data == true]
+      restart_policy:
+        condition: on-failure
+
+  namenode:
+    image: ${HADOOP_IMAGE:-bancomnm/hadoop:local}
+    command: ["bash", "-lc", "if [ ! -f /hadoop/dfs/name/current/VERSION ]; then hdfs namenode -format -force -nonInteractive; fi; exec hdfs namenode"]
+    configs:
+      - source: core_site
+        target: /opt/hadoop/etc/hadoop/core-site.xml
+      - source: hdfs_site
+        target: /opt/hadoop/etc/hadoop/hdfs-site.xml
+      - source: yarn_site
+        target: /opt/hadoop/etc/hadoop/yarn-site.xml
+      - source: mapred_site
+        target: /opt/hadoop/etc/hadoop/mapred-site.xml
+    volumes:
+      - namenode_data:/hadoop/dfs/name
+      - airflow_data:/opt/airflow/data
+      - ./mapreduce:/mapreduce:ro
+    networks: [backend]
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.labels.bancomnm-data == true]
+      restart_policy:
+        condition: on-failure
+
+  datanode-1:
+    image: ${HADOOP_IMAGE:-bancomnm/hadoop:local}
+    command: ["hdfs", "datanode"]
+    configs:
+      - source: core_site
+        target: /opt/hadoop/etc/hadoop/core-site.xml
+      - source: hdfs_site
+        target: /opt/hadoop/etc/hadoop/hdfs-site.xml
+      - source: yarn_site
+        target: /opt/hadoop/etc/hadoop/yarn-site.xml
+      - source: mapred_site
+        target: /opt/hadoop/etc/hadoop/mapred-site.xml
+    volumes: [datanode1_data:/hadoop/dfs/data]
+    networks: [backend]
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.labels.bancomnm-data == true]
+      restart_policy:
+        condition: on-failure
+
+  datanode-2:
+    image: ${HADOOP_IMAGE:-bancomnm/hadoop:local}
+    command: ["hdfs", "datanode"]
+    configs:
+      - source: core_site
+        target: /opt/hadoop/etc/hadoop/core-site.xml
+      - source: hdfs_site
+        target: /opt/hadoop/etc/hadoop/hdfs-site.xml
+      - source: yarn_site
+        target: /opt/hadoop/etc/hadoop/yarn-site.xml
+      - source: mapred_site
+        target: /opt/hadoop/etc/hadoop/mapred-site.xml
+    volumes: [datanode2_data:/hadoop/dfs/data]
+    networks: [backend]
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.labels.bancomnm-data == true]
+      restart_policy:
+        condition: on-failure
+
+  resourcemanager:
+    image: ${HADOOP_IMAGE:-bancomnm/hadoop:local}
+    command: ["yarn", "resourcemanager"]
+    configs:
+      - source: core_site
+        target: /opt/hadoop/etc/hadoop/core-site.xml
+      - source: hdfs_site
+        target: /opt/hadoop/etc/hadoop/hdfs-site.xml
+      - source: yarn_site
+        target: /opt/hadoop/etc/hadoop/yarn-site.xml
+      - source: mapred_site
+        target: /opt/hadoop/etc/hadoop/mapred-site.xml
+    networks: [backend]
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.labels.bancomnm-data == true]
+      restart_policy:
+        condition: on-failure
+
+  nodemanager-1:
+    image: ${HADOOP_IMAGE:-bancomnm/hadoop:local}
+    command: ["yarn", "nodemanager"]
+    configs:
+      - source: core_site
+        target: /opt/hadoop/etc/hadoop/core-site.xml
+      - source: hdfs_site
+        target: /opt/hadoop/etc/hadoop/hdfs-site.xml
+      - source: yarn_site
+        target: /opt/hadoop/etc/hadoop/yarn-site.xml
+      - source: mapred_site
+        target: /opt/hadoop/etc/hadoop/mapred-site.xml
+    volumes: [nodemanager1_data:/tmp/hadoop-yarn]
+    networks: [backend]
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.labels.bancomnm-data == true]
+      restart_policy:
+        condition: on-failure
+
+  nodemanager-2:
+    image: ${HADOOP_IMAGE:-bancomnm/hadoop:local}
+    command: ["yarn", "nodemanager"]
+    configs:
+      - source: core_site
+        target: /opt/hadoop/etc/hadoop/core-site.xml
+      - source: hdfs_site
+        target: /opt/hadoop/etc/hadoop/hdfs-site.xml
+      - source: yarn_site
+        target: /opt/hadoop/etc/hadoop/yarn-site.xml
+      - source: mapred_site
+        target: /opt/hadoop/etc/hadoop/mapred-site.xml
+    volumes: [nodemanager2_data:/tmp/hadoop-yarn]
+    networks: [backend]
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.labels.bancomnm-data == true]
+      restart_policy:
+        condition: on-failure
+
+  historyserver:
+    image: ${HADOOP_IMAGE:-bancomnm/hadoop:local}
+    command: ["mapred", "historyserver"]
+    configs:
+      - source: core_site
+        target: /opt/hadoop/etc/hadoop/core-site.xml
+      - source: hdfs_site
+        target: /opt/hadoop/etc/hadoop/hdfs-site.xml
+      - source: yarn_site
+        target: /opt/hadoop/etc/hadoop/yarn-site.xml
+      - source: mapred_site
+        target: /opt/hadoop/etc/hadoop/mapred-site.xml
+    volumes: [historyserver_data:/hadoop/mapred/history]
+    networks: [backend]
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.labels.bancomnm-data == true]
+      restart_policy:
+        condition: on-failure
+
+  airflow-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: ${AIRFLOW_POSTGRES_PASSWORD:?Set AIRFLOW_POSTGRES_PASSWORD}
+      POSTGRES_DB: airflow
+    volumes: [airflow_postgres_data:/var/lib/postgresql/data]
+    networks: [backend]
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.labels.bancomnm-data == true]
+      restart_policy:
+        condition: on-failure
+
+  airflow-webserver:
+    image: ${AIRFLOW_IMAGE:-bancomnm/airflow:local}
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        airflow db migrate
+        if ! airflow users list | grep -qw "$${AIRFLOW_ADMIN_USERNAME}"; then
+          airflow users create --username "$${AIRFLOW_ADMIN_USERNAME}" --password "$${AIRFLOW_ADMIN_PASSWORD}" --firstname Admin --lastname BancoMNM --role Admin --email admin@bancomnm.local
+        fi
+        exec airflow webserver
+    environment: &airflow_environment
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:?Set AIRFLOW_FERNET_KEY}
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_POSTGRES_PASSWORD:?Set AIRFLOW_POSTGRES_PASSWORD}@airflow-db:5432/airflow
+      BANK_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-mnm}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@database:5432/banco_db
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_WEBSERVER_SECRET_KEY:?Set AIRFLOW_WEBSERVER_SECRET_KEY}
+      AIRFLOW_ADMIN_USERNAME: ${AIRFLOW_ADMIN_USERNAME:-admin}
+      AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:?Set AIRFLOW_ADMIN_PASSWORD}
+      HADOOP_HOME: /opt/hadoop
+      HADOOP_CONF_DIR: /opt/hadoop/etc/hadoop
+      HADOOP_USER_NAME: hadoop
+      JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+      HDFS_URL: hdfs://namenode:8020
+      DATASET_EXPECTED_RECORDS: ${DATASET_EXPECTED_RECORDS:-1000000}
+    ports:
+      - target: 8080
+        published: 8083
+        protocol: tcp
+        mode: ingress
+    volumes:
+      - airflow_data:/opt/airflow/data
+    networks: [backend]
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.labels.bancomnm-data == true]
+      restart_policy:
+        condition: on-failure
+
+  airflow-scheduler:
+    image: ${AIRFLOW_IMAGE:-bancomnm/airflow:local}
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        until curl --fail --silent http://airflow-webserver:8080/health >/dev/null; do sleep 5; done
+        exec airflow scheduler
+    environment:
+      <<: *airflow_environment
+    volumes:
+      - airflow_data:/opt/airflow/data
+      - ${DATASET_HOST_PATH:?Set DATASET_HOST_PATH to the JSON dataset}:/data/dataset_transacciones_1_millon.json:ro
+    networks: [backend]
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.labels.bancomnm-data == true]
+      restart_policy:
+        condition: on-failure
+
+networks:
+  backend:
+    driver: overlay
+
+configs:
+  core_site:
+    file: ./hadoop/core-site.xml
+  hdfs_site:
+    file: ./hadoop/hdfs-site.xml
+  yarn_site:
+    file: ./hadoop/yarn-site.xml
+  mapred_site:
+    file: ./hadoop/mapred-site.xml
+
+volumes:
+  postgres_data:
+  namenode_data:
+  datanode1_data:
+  datanode2_data:
+  nodemanager1_data:
+  nodemanager2_data:
+  historyserver_data:
+  airflow_postgres_data:
+  airflow_data:

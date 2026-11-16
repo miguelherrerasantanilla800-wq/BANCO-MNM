@@ -202,11 +202,42 @@ async function renderClientDashboard() {
     api("/api/cliente/categorias"),
     api(`/api/cliente/transacciones?pagina=1&por_pagina=${PAGE_SIZE}`),
   ]);
-  pageContent.innerHTML = `${pageHeading("TU PANORAMA FINANCIERO", `Hola, ${escapeHtml(currentUser.email.split("@")[0])}`, "Aquí tienes el estado de tu cuenta y tus movimientos recientes.", '<span class="heading-date">Actualizado ahora</span>')}
+  const totalIncome = Number(summary.ingresos || 0);
+  const totalExpenses = Number(summary.egresos || 0);
+  const netFlow = totalIncome - totalExpenses;
+  const expenseShare = totalIncome > 0 ? Math.round((totalExpenses / totalIncome) * 100) : null;
+  const topCategory = categories[0];
+  const userName = currentUser.email.split("@")[0]
+    .replace(/[._-]/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+  const cashFlowDescription = totalIncome === 0 && totalExpenses === 0
+    ? "Aún no hay movimientos para comparar."
+    : totalIncome >= totalExpenses
+      ? "Los ingresos registrados superan los egresos."
+      : "Los egresos registrados superan los ingresos.";
+  pageContent.innerHTML = `${pageHeading("TU PANORAMA FINANCIERO", `Hola, ${escapeHtml(userName)}`, "Aquí tienes el estado de tu cuenta y tus movimientos recientes.", '<span class="heading-date">Actualizado ahora</span>')}
     <section class="metrics-grid" aria-label="Resumen de cuenta">
       ${metricCard("Saldo disponible", formatMoney(summary.saldo), "◉", "Saldo de tu último movimiento", true)}
       ${metricCard("Ingresos acumulados", formatMoney(summary.ingresos), "↙", "Total de créditos registrados")}
       ${metricCard("Egresos acumulados", formatMoney(summary.egresos), "↗", "Total de débitos registrados")}
+    </section>
+    <section class="insights-section" aria-label="Lecturas de tu economía">
+      <div class="section-row"><div><h2>En pocas palabras</h2><p>Indicadores calculados a partir de tus movimientos registrados.</p></div></div>
+      <div class="insights-grid">
+        <article class="insight-card">
+          <span class="insight-icon" aria-hidden="true">↕</span>
+          <div class="insight-copy"><span class="insight-label">DIFERENCIA REGISTRADA</span><strong class="${netFlow >= 0 ? "insight-positive" : "insight-negative"}">${formatMoney(netFlow)}</strong><p>${cashFlowDescription} No equivale al saldo disponible.</p></div>
+        </article>
+        <article class="insight-card">
+          <span class="insight-icon" aria-hidden="true">◈</span>
+          <div class="insight-copy"><span class="insight-label">MAYOR CATEGORÍA DE GASTO</span><strong>${topCategory ? escapeHtml(topCategory.categoria) : "Sin datos"}</strong><p>${topCategory ? `${formatMoney(topCategory.monto)} en el historial registrado.` : "Aún no hay egresos categorizados."}</p></div>
+        </article>
+        <article class="insight-card">
+          <span class="insight-icon" aria-hidden="true">%</span>
+          <div class="insight-copy"><span class="insight-label">EGRESOS FRENTE A INGRESOS</span><strong>${expenseShare === null ? "Sin dato" : `${expenseShare}%`}</strong><p>${expenseShare === null ? "No hay ingresos registrados para calcular esta proporción." : "Proporción histórica entre egresos e ingresos registrados."}</p></div>
+        </article>
+      </div>
+      <p class="insights-disclaimer">Lectura descriptiva de datos registrados; no es una recomendación financiera.</p>
     </section>
     <section class="dashboard-grid">
       <article class="panel"><div class="panel-header"><div><h2 class="panel-title">Ingresos y egresos</h2><p class="panel-subtitle">Comparativo mensual de tu actividad</p></div><span class="panel-period">Por mes</span></div>
@@ -235,35 +266,108 @@ async function renderClientDashboard() {
 }
 
 async function renderAnalystDashboard() {
-  const [summary, monthly, alerts] = await Promise.all([
-    api("/api/global/resumen"),
-    api("/api/global/mensual"),
+  const [dataset, alerts] = await Promise.all([
+    api("/api/global/dataset"),
     api("/api/global/alertas?pagina=1&por_pagina=5"),
   ]);
-  pageContent.innerHTML = `${pageHeading("VISTA CONSOLIDADA", "Actividad del banco", "Indicadores globales y movimientos que requieren atención.", '<span class="heading-date">Actualizado ahora</span>')}
-    <section class="metrics-grid" aria-label="Indicadores del banco">
-      ${metricCard("Transacciones registradas", Number(summary.total_transacciones).toLocaleString("es-CO"), "⇄", "Movimientos en todas las cuentas")}
-      ${metricCard("Monto total procesado", formatMoney(summary.monto_total), "◈", "Suma de los montos registrados", true)}
-      ${metricCard("Alertas por revisar", Number(alerts.total).toLocaleString("es-CO"), "⚑", `Umbral actual: ${formatMoney(alerts.umbral)}`)}
+  const quality = dataset.quality;
+  const generatedAt = new Intl.DateTimeFormat("es-CO", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(dataset.generated_at));
+  const months = [...new Set(dataset.monthly_channel.map((item) => item.month))];
+  const channels = [...new Set(dataset.monthly_channel.map((item) => item.channel))];
+  const monthlyTotals = new Map(
+    dataset.monthly_channel.map((item) => [`${item.month}|${item.channel}`, item.amount_cop]),
+  );
+  const chartColors = ["#27745e", "#d97962", "#497b94", "#d6a64f", "#71885d", "#8a72a3"];
+  pageContent.innerHTML = `${pageHeading("ANALÍTICA GLOBAL · ETL", "Dataset de un millón de registros", "Indicadores agregados procesados por Airflow, Hadoop y MapReduce.", `<span class="heading-date">Publicado ${escapeHtml(generatedAt)}</span>`)}
+    <aside class="dataset-notice" role="note">
+      <strong>Vista global del dataset</strong>
+      <span>Estos agregados no representan el saldo ni los movimientos personales de una cuenta bancaria.</span>
+      <span>Fuente: ${escapeHtml(dataset.source)} · ${Number(quality.rejected_records).toLocaleString("es-CO")} registros rechazados</span>
+    </aside>
+    <section class="metrics-grid" aria-label="Indicadores globales del dataset">
+      ${metricCard("Registros validados", Number(quality.valid_records).toLocaleString("es-CO"), "✓", `De ${Number(quality.input_records).toLocaleString("es-CO")} registros de entrada`)}
+      ${metricCard("Monto aprobado", formatMoney(dataset.approved.amount_cop), "◈", `${Number(dataset.approved.transactions).toLocaleString("es-CO")} transacciones aprobadas`, true)}
+      ${metricCard("Fraudes señalados", Number(dataset.fraud.transactions).toLocaleString("es-CO"), "⚑", "Marcados en el dataset por ciudad")}
     </section>
     <section class="dashboard-grid">
-      <article class="panel"><div class="panel-header"><div><h2 class="panel-title">Volumen mensual</h2><p class="panel-subtitle">Transacciones y monto procesado</p></div><span class="panel-period">Por mes</span></div>
-        <div class="chart-wrap"><canvas id="global-monthly-chart" aria-label="Gráfico de actividad mensual del banco"></canvas></div>
-        <div class="legend-row"><span class="legend-key"><i class="legend-swatch"></i>Monto procesado</span></div>
+      <article class="panel"><div class="panel-header"><div><h2 class="panel-title">Actividad mensual por canal</h2><p class="panel-subtitle">Monto COP de todos los estados del dataset</p></div></div>
+        <div class="chart-wrap"><canvas id="dataset-monthly-chart" aria-label="Gráfico mensual del monto por canal del dataset"></canvas></div>
       </article>
-      <article class="panel"><div class="panel-header"><div><h2 class="panel-title">Atención prioritaria</h2><p class="panel-subtitle">Mayores montos sobre el umbral</p></div></div>
-        <div class="mini-alerts">${alerts.items.length ? alerts.items.slice(0, 4).map((item) => `<div class="mini-alert"><span class="alert-mark">!</span><span class="mini-alert-copy"><strong>${formatMoney(item.monto)}</strong><small>Cuenta ${escapeHtml(item.id_cuenta)} · ${escapeHtml(item.categoria)}</small></span></div>`).join("") : '<div class="empty-state">No hay alertas para mostrar.</div>'}</div>
-        <div class="mini-alert-footer"><button id="see-alerts" class="text-link" type="button">Ver todas las alertas →</button></div>
+      <article class="panel"><div class="panel-header"><div><h2 class="panel-title">Monto aprobado por categoría</h2><p class="panel-subtitle">Transacciones aprobadas agregadas</p></div></div>
+        <div class="chart-wrap small-chart"><canvas id="dataset-category-chart" aria-label="Gráfico de monto aprobado por categoría"></canvas></div>
       </article>
     </section>
-    <div class="section-row"><div><h2>Transacciones recientes</h2><p>Últimos registros de todas las cuentas</p></div></div>
-    <section class="table-panel"><div class="table-scroll">${transactionsTable(alerts.items, true)}</div></section>`;
-  activeCharts.push(new Chart(document.querySelector("#global-monthly-chart"), {
+    <section class="dashboard-grid dataset-secondary-grid">
+      <article class="panel"><div class="panel-header"><div><h2 class="panel-title">Fraudes señalados por ciudad</h2><p class="panel-subtitle">Conteo de registros marcados como fraude</p></div></div>
+        <div class="chart-wrap small-chart"><canvas id="dataset-fraud-chart" aria-label="Fraudes señalados por ciudad"></canvas></div>
+      </article>
+      <article class="panel"><div class="panel-header"><div><h2 class="panel-title">Clientes con mayor monto aprobado</h2><p class="panel-subtitle">${Number(dataset.customers.with_approved_activity).toLocaleString("es-CO")} clientes con actividad aprobada</p></div></div>
+        <div class="table-scroll">${datasetCustomerTable(dataset.customers.top)}</div>
+      </article>
+    </section>
+    <p class="dataset-disclaimer">Analítica global del dataset · Publicada ${escapeHtml(generatedAt)} · Las alertas de cuentas bancarias siguen disponibles en la sección Alertas.</p>`;
+  const monthlyDatasets = channels.map((channel, index) => ({
+    label: channel,
+    data: months.map((month) => monthlyTotals.get(`${month}|${channel}`) || 0),
+    backgroundColor: chartColors[index % chartColors.length],
+    borderRadius: 3,
+    maxBarThickness: 22,
+  }));
+  activeCharts.push(new Chart(document.querySelector("#dataset-monthly-chart"), {
     type: "bar",
-    data: { labels: monthly.map((item) => monthLabel(item.mes)), datasets: [{ label: "Monto", data: monthly.map((item) => item.monto), backgroundColor: "#27745e", borderRadius: 3, maxBarThickness: 28, yAxisID: "y" }] },
+    data: { labels: months.map(monthLabel), datasets: monthlyDatasets },
     options: chartOptions(),
   }));
-  document.querySelector("#see-alerts").addEventListener("click", () => navigate("alertas"));
+  activeCharts.push(new Chart(document.querySelector("#dataset-category-chart"), {
+    type: "doughnut",
+    data: {
+      labels: dataset.categories.map((item) => item.category),
+      datasets: [{
+        data: dataset.categories.map((item) => item.amount_cop),
+        backgroundColor: chartColors,
+        borderWidth: 2,
+        borderColor: "#fff",
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      cutout: "69%",
+      plugins: {
+        legend: { position: "bottom", labels: { usePointStyle: true, pointStyle: "circle", boxWidth: 7, padding: 12, color: "#77817c", font: { family: "DM Sans", size: 9 } } },
+        tooltip: { callbacks: { label: (item) => `${item.label}: ${formatMoney(item.raw)}` } },
+      },
+    },
+  }));
+  activeCharts.push(new Chart(document.querySelector("#dataset-fraud-chart"), {
+    type: "bar",
+    data: {
+      labels: dataset.fraud.by_city.map((item) => item.city),
+      datasets: [{
+        label: "Fraudes señalados",
+        data: dataset.fraud.by_city.map((item) => item.transactions),
+        backgroundColor: "#d97962",
+        borderRadius: 3,
+      }],
+    },
+    options: {
+      ...chartOptions(),
+      plugins: {
+        ...chartOptions().plugins,
+        tooltip: { callbacks: { label: (item) => `${Number(item.raw).toLocaleString("es-CO")} registros` } },
+      },
+    },
+  }));
+}
+
+function datasetCustomerTable(customers) {
+  if (!customers?.length) return '<div class="empty-state">No hay agregados de clientes aprobados.</div>';
+  return `<table class="data-table"><thead><tr><th>Cliente del dataset</th><th>Transacciones</th><th>Monto aprobado</th></tr></thead><tbody>${customers.map((item) => `<tr>
+    <td>${escapeHtml(item.customer_id)}</td><td>${Number(item.transactions).toLocaleString("es-CO")}</td><td class="amount">${formatMoney(item.amount_cop)}</td>
+  </tr>`).join("")}</tbody></table>`;
 }
 
 function recentTransactionsSection(items) {
@@ -413,6 +517,16 @@ document.querySelector("#login-form").addEventListener("submit", async (event) =
 });
 
 document.querySelector("#logout-button").addEventListener("click", () => logout());
+
+const legalDialog = document.querySelector("#legal-dialog");
+document.addEventListener("click", (event) => {
+  if (!(event.target instanceof Element)) return;
+  if (event.target.closest("[data-open-legal]")) legalDialog.showModal();
+  if (event.target.closest("[data-close-legal]")) legalDialog.close();
+});
+legalDialog.addEventListener("click", (event) => {
+  if (event.target === legalDialog) legalDialog.close();
+});
 
 async function restoreSession() {
   if (!localStorage.getItem(TOKEN_KEY)) return;

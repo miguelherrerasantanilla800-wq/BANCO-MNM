@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timezone
 
 os.environ["AUTH_DATABASE_URL"] = "sqlite://"
 os.environ["BANK_DATABASE_URL"] = "sqlite://"
@@ -6,6 +7,8 @@ os.environ["JWT_SECRET"] = "test-secret-with-more-than-32-characters"
 
 from fastapi.testclient import TestClient
 
+from bank_service.database import SessionLocal
+from bank_service.models import DatasetAnalyticsSnapshot
 from auth_service.main import app as auth_app
 from bank_service.main import app as bank_app
 
@@ -39,6 +42,7 @@ def test_client_dashboard_filters_and_role_boundaries():
         assert summary.status_code == 200
         assert summary.json()["ingresos"] > 0
         assert bank.get("/api/global/resumen", headers=client_headers).status_code == 403
+        assert bank.get("/api/global/dataset", headers=client_headers).status_code == 403
         assert bank.get("/api/cliente/resumen", headers=analyst_headers).status_code == 403
 
         transactions = bank.get(
@@ -59,6 +63,37 @@ def test_client_dashboard_filters_and_role_boundaries():
         assert alerts.status_code == 200
         assert alerts.json()["total"] > 0
         assert bank.get("/api/global/resumen").status_code == 401
+
+
+def test_analyst_dataset_endpoint_reads_only_the_published_snapshot():
+    with TestClient(auth_app) as auth, TestClient(bank_app) as bank:
+        analyst_token = login(auth, "analista1@bancomnm.xyz", "Analista123!")
+        headers = {"Authorization": f"Bearer {analyst_token}"}
+
+        assert bank.get("/api/global/dataset", headers=headers).status_code == 503
+
+        payload = {
+            "quality": {"input_records": 1_000_000, "valid_records": 1_000_000, "rejected_records": 0},
+            "approved": {"amount_cop": 1250.0, "transactions": 2},
+            "categories": [],
+            "fraud": {"transactions": 3, "by_city": []},
+            "customers": {"with_approved_activity": 1, "top": []},
+            "monthly_channel": [],
+        }
+        with SessionLocal() as session:
+            session.add(
+                DatasetAnalyticsSnapshot(
+                    id=1,
+                    generated_at=datetime.now(timezone.utc),
+                    payload=payload,
+                )
+            )
+            session.commit()
+
+        response = bank.get("/api/global/dataset", headers=headers)
+        assert response.status_code == 200
+        assert response.json()["quality"]["valid_records"] == 1_000_000
+        assert response.json()["approved"]["transactions"] == 2
 
 
 def test_client_can_transfer_between_users_atomically():

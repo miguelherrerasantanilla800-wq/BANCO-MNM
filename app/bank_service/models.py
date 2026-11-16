@@ -1,10 +1,22 @@
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
+from typing import Any
 
-from sqlalchemy import Date, ForeignKey, Integer, Numeric, String
+from sqlalchemy import JSON, Date, DateTime, ForeignKey, Integer, Numeric, SmallInteger, String
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from bank_service.database import Base
+
+
+class DatasetAnalyticsSnapshot(Base):
+    __tablename__ = "dataset_analytics_snapshots"
+
+    id: Mapped[int] = mapped_column(SmallInteger, primary_key=True)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql"), nullable=False
+    )
 
 
 class Account(Base):

@@ -9,7 +9,7 @@ from sqlalchemy import func, inspect, select, text
 from sqlalchemy.orm import Session
 
 from bank_service.database import Base, SessionLocal, engine, get_db
-from bank_service.models import Account, Transaction
+from bank_service.models import Account, DatasetAnalyticsSnapshot, Transaction
 from common.errors import add_bad_request_validation
 from common.security import get_current_user, require_role
 
@@ -306,6 +306,22 @@ def global_summary(
     total = db.scalar(select(func.count()).select_from(Transaction)) or 0
     amount = db.scalar(select(func.sum(Transaction.amount)))
     return {"total_transacciones": total, "monto_total": money(amount)}
+
+
+@app.get("/api/global/dataset")
+def global_dataset_analytics(
+    _: dict = Depends(require_role("analista")), db: Session = Depends(get_db)
+):
+    snapshot = db.get(DatasetAnalyticsSnapshot, 1)
+    if snapshot is None:
+        raise HTTPException(
+            status_code=503,
+            detail="La analítica del dataset aún no está publicada por Airflow.",
+        )
+    return {
+        **snapshot.payload,
+        "generated_at": snapshot.generated_at.isoformat(),
+    }
 
 
 @app.get("/api/global/mensual")

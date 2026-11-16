@@ -5,19 +5,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#123b34">
     <title>Banco MNM | Finanzas claras</title>
+    <link rel="icon" type="image/png" href="/assets/banco-mnm-mark.png">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/styles.css?v=dashboard-2026-11-etl">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js" defer></script>
-    <script src="/app.js" defer></script>
+    <script src="/app.js?v=dashboard-2026-11-etl" defer></script>
   </head>
   <body>
     <main id="app" class="app-shell">
       <section id="login-view" class="login-view" aria-labelledby="login-title">
         <div class="login-story">
           <a class="brand brand-light" href="/" aria-label="Banco MNM, inicio">
-            <span class="brand-mark">M</span>
+            <img class="brand-mark" src="/assets/banco-mnm-mark.png" alt="">
             <span>Banco <strong>MNM</strong></span>
           </a>
           <div class="story-copy">
@@ -26,16 +27,16 @@
             <p>Una mirada sencilla a lo que entra, lo que sale y lo que viene.</p>
           </div>
           <div class="story-visual" aria-hidden="true">
-            <div class="visual-label"><span class="status-dot"></span> Resumen del mes</div>
-            <div class="visual-total">$ 2.840.500</div>
-            <div class="visual-caption">Balance disponible</div>
+            <div class="visual-label"><span class="status-dot"></span> TU ESPACIO FINANCIERO</div>
+            <div class="visual-total">Tu dinero,<br>más claro.</div>
+            <div class="visual-caption">Ingresos · gastos · saldo</div>
             <div class="visual-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
             <div class="visual-foot"><span>ENE</span><span>FEB</span><span>MAR</span><span>ABR</span><span>MAY</span><span>JUN</span></div>
           </div>
           <span class="story-index">01 / FINANZAS PERSONALES</span>
         </div>
         <div class="login-panel">
-          <div class="login-panel-top"><span>Acceso seguro</span><span class="secure-mark">●&nbsp; CONEXIÓN PROTEGIDA</span></div>
+          <div class="login-panel-top"><span>Acceso de demostración</span><span class="secure-mark">●&nbsp; DATOS DE PRUEBA</span></div>
           <form id="login-form" class="login-form">
             <div class="form-heading">
               <p class="eyebrow">BIENVENIDO DE VUELTA</p>
@@ -48,21 +49,22 @@
             <input id="password" name="password" type="password" autocomplete="current-password" placeholder="Tu contraseña" required>
             <p id="login-error" class="form-error" role="alert" hidden></p>
             <button id="login-submit" class="button button-primary button-wide" type="submit">Entrar <span aria-hidden="true">→</span></button>
-            <p class="login-note">Tus datos se protegen con autenticación cifrada.</p>
+            <p class="login-note">Usa solo las cuentas de demostración. No ingreses información personal o financiera real.</p>
           </form>
-          <footer class="login-footer"><span>© 2026 Banco MNM</span><span>Ayuda y seguridad</span></footer>
+          <footer class="login-footer"><span>© 2026 Banco MNM · Proyecto educativo</span><button class="legal-trigger" type="button" data-open-legal>Privacidad y condiciones</button></footer>
         </div>
       </section>
 
       <section id="dashboard-view" class="dashboard-view" hidden>
         <aside class="sidebar">
           <a class="brand brand-dark" href="#inicio" aria-label="Banco MNM, inicio">
-            <span class="brand-mark">M</span><span>Banco <strong>MNM</strong></span>
+            <img class="brand-mark" src="/assets/banco-mnm-mark.png" alt=""><span>Banco <strong>MNM</strong></span>
           </a>
           <div class="sidebar-section-label">TU ESPACIO</div>
           <nav id="main-nav" class="main-nav" aria-label="Navegación principal"></nav>
           <div class="sidebar-bottom">
             <div class="sidebar-help"><span class="help-icon">?</span><div><strong>¿Necesitas ayuda?</strong><span>Estamos para ti</span></div></div>
+            <button class="legal-trigger sidebar-legal" type="button" data-open-legal>Privacidad y condiciones <span aria-hidden="true">↗</span></button>
             <button id="logout-button" class="logout-button" type="button"><span aria-hidden="true">↪</span> Cerrar sesión</button>
             <div class="profile-row"><span id="profile-avatar" class="avatar">M</span><span class="profile-copy"><strong id="profile-name">Usuario</strong><small id="profile-role">Cliente</small></span><span class="profile-menu" aria-hidden="true">···</span></div>
           </div>
@@ -73,10 +75,43 @@
             <div class="topbar-actions"><span class="today-label" id="today-label"></span><span class="topbar-avatar" id="topbar-avatar">M</span></div>
           </header>
           <main id="page-content" class="page-content" tabindex="-1"></main>
-          <footer class="app-footer"><span>Banco MNM <span aria-hidden="true">·</span> Panel financiero</span><span>Datos protegidos <span class="footer-lock">●</span></span></footer>
+          <footer class="app-footer"><span>Banco MNM <span aria-hidden="true">·</span> Entorno de demostración</span><button class="legal-trigger" type="button" data-open-legal>Privacidad y condiciones</button></footer>
         </div>
       </section>
       <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
     </main>
+    <dialog id="legal-dialog" class="legal-dialog" aria-labelledby="legal-title" aria-describedby="legal-intro">
+      <div class="legal-sheet">
+        <header class="legal-header">
+          <div><p class="eyebrow">TRANSPARENCIA Y CONFIANZA</p><h2 id="legal-title">Privacidad y condiciones</h2></div>
+          <button class="legal-close" type="button" data-close-legal aria-label="Cerrar">×</button>
+        </header>
+        <div class="legal-content">
+          <p id="legal-intro" class="legal-callout"><strong>Este es un prototipo educativo.</strong> Banco MNM no es una entidad financiera real ni ofrece productos, asesoría o servicios bancarios. Usa únicamente las cuentas y datos ficticios de demostración; no ingreses información personal, credenciales reales ni datos financieros reales.</p>
+          <section>
+            <h3>Responsable y alcance</h3>
+            <p>Banco MNM es el nombre de una aplicación de laboratorio. Este proyecto no tiene configurados una persona jurídica responsable del tratamiento, NIT, domicilio ni canal oficial para solicitudes de titulares. Por eso no debe usarse para tratar datos personales reales ni como política de privacidad de un servicio en producción.</p>
+          </section>
+          <section>
+            <h3>Datos y finalidades de la demostración</h3>
+            <p>La aplicación de prueba puede procesar el correo de la cuenta demo, rol, identificadores ficticios de cuenta y transacción, fechas, conceptos, categorías, tipos y montos simulados. Se usan exclusivamente para iniciar sesión, mostrar resúmenes y movimientos, probar transferencias simuladas y generar alertas del laboratorio. No se usan para ofrecer productos ni publicidad.</p>
+          </section>
+          <section>
+            <h3>Autorización y derechos</h3>
+            <p>La Ley 1581 de 2012 reconoce, entre otros, el derecho a conocer, actualizar y rectificar los datos; solicitar prueba de la autorización y conocer su uso; acceder gratuitamente a ellos; y solicitar revocatoria o supresión en los casos previstos por la ley. El tratamiento real requiere autorización previa e informada cuando corresponda y conservar prueba consultable. Este prototipo no captura ni almacena una autorización legal de titulares.</p>
+          </section>
+          <section>
+            <h3>Consultas y reclamos</h3>
+            <p>En una implementación real, el responsable debe publicar su identificación y un canal para consultas o reclamos, atenderlos conforme a los términos legales y explicar cómo acudir a la Superintendencia de Industria y Comercio una vez agotado el trámite correspondiente. Este prototipo no tiene habilitado un canal para esas solicitudes: no envíes documentos ni información personal.</p>
+          </section>
+          <section>
+            <h3>Condiciones de uso</h3>
+            <p>Los saldos, gráficos, alertas y transferencias corresponden a datos de prueba y no representan fondos ni operaciones reales. La información es descriptiva y no constituye recomendación financiera. El proyecto no está configurado ni auditado para producción; antes de un uso real se deben definir responsable, finalidades, retención, medidas de seguridad, canales de atención y mecanismos verificables de autorización.</p>
+          </section>
+          <p class="legal-source">Referencia: <a href="https://www.funcionpublica.gov.co/eva/gestornormativo/norma.php?i=49981" target="_blank" rel="noopener noreferrer">Ley Estatutaria 1581 de 2012</a>. Este texto es informativo y debe revisarse jurídicamente antes de cualquier despliegue real.</p>
+        </div>
+        <footer class="legal-footer"><span>Banco MNM · Prototipo educativo</span><button class="button button-primary button-compact" type="button" data-close-legal>Entendido</button></footer>
+      </div>
+    </dialog>
   </body>
 </html>

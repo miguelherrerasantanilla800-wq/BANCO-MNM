@@ -1,0 +1,7 @@
+.git
+.vagrant
+.env
+.pytest_cache
+**/__pycache__
+**/*.py[cod]
+dataset_transacciones_1_millon.json

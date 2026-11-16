@@ -1,226 +1,184 @@
-# Banco MNM: Vagrant y Docker
+# Banco MNM — Docker, Hadoop y Airflow
 
-Aplicación bancaria educativa en FastAPI con dos APIs independientes, una interfaz web, PostgreSQL y Nginx. El mismo sistema se puede ejecutar de dos maneras:
-
-- **Vagrant:** cuatro máquinas virtuales Ubuntu, una para PostgreSQL, una para AUTH, una para BANCO y una para Nginx/frontend.
-- **Docker Compose:** los mismos cuatro servicios como contenedores en el host.
-
-En ambos modos AUTH y BANCO son servicios separados; ya no se despliega la API monolítica Users/Orders/Payments.
+Aplicación bancaria educativa con FastAPI, PostgreSQL y Nginx, más una plataforma de analítica de un millón de transacciones. El entorno local se ejecuta con Docker Compose; se incluye un stack Docker Swarm para desplegar y escalar los servicios.
 
 ## Arquitectura
 
-```text
-                         Navegador
-                             |
-                   http://localhost:8081 (Vagrant)
-                   http://localhost:8080 (Docker)
-                             |
-                      Nginx + frontend
-                             |
-                 +-----------+-----------+
-                 |                       |
-          AUTH :8001                 BANCO :8002
-       login y tokens JWT       cuentas, ledger y transferencias
-                 |                       |
-                 +-----------+-----------+
-                             |
-                     PostgreSQL :5432
-                     auth_db / banco_db
-```
+| Componente | Servicios                                                                               | Función                                       |
+| ---------- | --------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| Banca      | `nginx`, `auth`, `bank`, `database`                                             | Frontend, APIs y datos transaccionales         |
+| Hadoop     | `namenode`, 2 `datanode`, `resourcemanager`, 2 `nodemanager`, `historyserver` | HDFS y ejecución distribuida MapReduce        |
+| Airflow    | `airflow-webserver`, `airflow-scheduler`, `airflow-db`                            | Orquesta Bronze → Silver → Gold y controla calidad |
+| Notebook   | `notebook` (perfil opcional `analysis`)                                            | Análisis exploratorio de Silver y Gold |
 
-En Vagrant cada bloque se ejecuta en su propia VM dentro de una red privada:
-
-| VM | IP privada | Servicio |
-| --- | --- | --- |
-| `database` | `192.168.56.20` | PostgreSQL, `auth_db` y `banco_db` |
-| `auth` | `192.168.56.21` | API AUTH, puerto `8001` |
-| `bank` | `192.168.56.22` | API BANCO, puerto `8002` |
-| `gateway` | `192.168.56.23` | Nginx y frontend, puerto `80` |
-
-Solo el gateway publica un puerto al host en Vagrant (`localhost:8081`). En Docker, Nginx publica `localhost:8080`. Ambas opciones pueden funcionar a la vez. La base de datos de cada modo es independiente.
-
-## Alcance de la entrega y dominio
-
-La entrega corre **localmente en el equipo Windows** usando Vagrant y VirtualBox; no está desplegada en servidores de nube. El servidor de frontend es la VM `gateway` (Nginx sirve los archivos estáticos), las APIs backend están en las VMs `auth` y `bank`, y PostgreSQL en `database`. Las direcciones `192.168.56.x` pertenecen a la red privada de VirtualBox; el acceso desde Windows se realiza por `http://localhost:8081`.
-
-`bancomnm.xyz` aparece únicamente como sufijo de los correos de demostración (`cliente1@bancomnm.xyz`, por ejemplo). **No se configura DNS ni se publica un sitio en ese dominio** en esta entrega. La aplicación solo está disponible localmente: `localhost:8081` con Vagrant o `localhost:8080` con Docker Compose.
-
-## Motivación y problema
-
-El proyecto simula un banco para practicar autenticación, autorización por roles y despliegue de servicios separados. Un cliente necesita consultar su cuenta y enviar dinero a otro cliente; un analista necesita observar indicadores agregados y alertas de movimientos grandes. AUTH gestiona identidad y tokens, mientras BANCO ejecuta las operaciones financieras y mantiene el ledger. No se conecta a una entidad bancaria real ni mueve dinero real.
-
-## Estructura del proyecto
+El dataset fuente es un arreglo JSON de 1.000.000 de objetos. **La arquitectura Medallón son directorios de datos en HDFS; no es el notebook.** Airflow dirige la ETL, Hadoop/HDFS almacena las capas, y el notebook se usa únicamente para el análisis exploratorio de los datos ya procesados.
 
 ```text
-vagrant-monlito-class/
-├── Vagrantfile                 # orquesta las cuatro VMs
-├── vagrant/
-│   ├── provision.sh            # instala Docker y ejecuta el servicio de cada VM
-│   └── nginx.conf              # proxy entre VMs para Vagrant
-├── docker-compose.yml          # despliegue local de los cuatro contenedores
-├── .env.example                # plantilla de secretos y opciones
-├── BANCO_MNM.md                # rutas y detalles del dominio bancario
-├── app/
-│   ├── auth_service/            # login, usuarios y JWT
-│   ├── bank_service/            # cuentas, movimientos, transferencias y alertas
-│   ├── common/                  # validación de JWT y errores compartidos
-│   ├── scripts/                 # importador de dataset Berka
-│   ├── tests/                   # pruebas automatizadas de las APIs
-│   ├── Dockerfile
-│   └── requirements*.txt
-├── database/init/               # inicialización de banco_db
-├── frontend/                    # aplicación web
-└── nginx/default.conf           # proxy para Docker Compose
+/bancomnm/
+├── bronze/
+│   └── transacciones/sha256=<hash>/dataset.json
+├── silver/
+│   ├── transacciones/dataset.jsonl
+│   ├── quality_report.json
+│   └── quarantine/
+└── gold/
+    ├── job1_categoria/
+    ├── job2_fraude/
+    ├── job3_clientes/
+    └── job4_mensual/
 ```
 
-## Requisitos y configuración
+El DAG conserva el original en Bronze por SHA-256, valida y estandariza registros en Silver JSON Lines, y ejecuta cuatro agregaciones MapReduce en Gold. Silver incluye un reporte de calidad y una carpeta de cuarentena para registros rechazados. Al terminar, Airflow publica un snapshot agregado en `banco_db`; el panel **Analista** consume ese snapshot por `/api/global/dataset`. El panel de cliente sigue mostrando únicamente los movimientos asociados a su cuenta. El notebook solo lee Silver y Gold para hacer el análisis exploratorio.
 
-- Para Vagrant: Vagrant y VirtualBox instalados y operativos; reserva aproximadamente 3 GB de RAM para las cuatro VMs.
-- Para Docker Compose: Docker Desktop con `docker compose` v2.
-- Para las pruebas locales: Python 3 y pip.
+## Requisitos
 
-Desde la carpeta del repositorio, crea `.env` si aún no existe y edita `POSTGRES_PASSWORD` y `JWT_SECRET`. `JWT_SECRET` debe ser una cadena privada de al menos 32 caracteres. No reemplaces un `.env` local que ya tenga tus valores.
+- Docker Desktop con Docker Compose v2.
+- 8 GB de memoria disponibles como mínimo; 10 GB recomendados para ejecutar Hadoop, Airflow y la aplicación juntos.
+- El archivo `dataset_transacciones_1_millon.json` en la raíz.
+- Para ejecutar pruebas locales: Python 3.10+ y las dependencias de desarrollo.
+
+## Inicio rápido (PowerShell)
 
 ```powershell
-if (-not (Test-Path .env)) { Copy-Item .env.example .env }
+.\start.ps1
 ```
 
-Vagrant lee esta configuración dentro de cada VM para iniciar los contenedores. Mantén el archivo en formato `CLAVE=VALOR`; no subas `.env` a Git.
+El script conserva los valores que ya tengas en `.env`, genera los secretos faltantes y ejecuta Compose. Guarda la contraseña de Airflow que muestra al final. La primera ejecución descarga y construye las imágenes; las siguientes solo inician los contenedores.
 
-## Despliegue con Vagrant
-
-Ejecuta los comandos desde la carpeta que contiene este `Vagrantfile`:
+Para reconstruir imágenes después de modificar código:
 
 ```powershell
-vagrant validate
-vagrant up --provider=virtualbox
-vagrant status
-Invoke-RestMethod http://127.0.0.1:8081/health
-```
-
-El primer `vagrant up` crea cuatro VMs, instala Docker en cada una, inicia PostgreSQL, espera a que responda antes de levantar AUTH y BANCO, y finalmente publica Nginx. La primera ejecución descarga Ubuntu e imágenes Docker y puede tardar varios minutos.
-
-Abre `http://localhost:8081` para usar la aplicación. La respuesta del healthcheck debe ser `status=ok`. Para revisar un servicio:
-
-```powershell
-vagrant ssh database
-vagrant ssh auth
-vagrant ssh bank
-vagrant ssh gateway
-```
-
-Dentro de una VM, `sudo docker ps` muestra su contenedor. Para volver a aplicar cambios de código o configuración, provisiona el nodo afectado; para cambios compartidos de `app/`, provisiona ambas APIs:
-
-```powershell
-vagrant provision auth
-vagrant provision bank
-vagrant provision gateway
-```
-
-Para apagar las VMs sin borrarlas, usa `vagrant halt`; para iniciarlas de nuevo, `vagrant up`. `vagrant destroy` elimina las cuatro máquinas y también los datos PostgreSQL que están almacenados en la VM `database`. El archivo `.env` del host permanece.
-
-## Despliegue con Docker Compose
-
-Desde la raíz del repositorio:
-
-```powershell
-docker compose config --quiet
-docker compose up --build -d
+.\start.ps1 -Build
 docker compose ps
-Invoke-RestMethod http://127.0.0.1:8080/health
 ```
 
-Abre `http://localhost:8080`. Para consultar logs o detener los servicios:
+Hadoop formatea el NameNode solo al inicializar su volumen vacío. Para detener y conservar datos:
 
 ```powershell
-docker compose logs -f
 docker compose down
 ```
 
-`docker compose down` conserva el volumen `postgres_data`; `docker compose down -v` lo elimina permanentemente. Esta base es independiente de la que corre en Vagrant.
-
-## Roles de usuario
-
-AUTH valida el correo y la contraseña, y emite un JWT con el rol y la cuenta asociada. BANCO valida ese token en cada operación y aplica autorización por rol.
-
-| Rol | Qué puede hacer | Qué no puede hacer |
-| --- | --- | --- |
-| `cliente` | Consultar saldo, ingresos, gastos, movimientos y destinatarios; enviar dinero a otro cliente desde su propia cuenta. | Consultar indicadores globales, alertas de analista o transferir desde otra cuenta. |
-| `analista` | Ver el resumen global, volumen mensual y los datos de las transacciones que superan el umbral de alertas. | Ver el saldo o historial completo de una cuenta, consultar destinatarios o enviar transferencias. |
-
-Usuarios de demostración (solo desarrollo):
-
-- Cliente: `cliente1@bancomnm.xyz` a `cliente5@bancomnm.xyz`; contraseña `Cliente123!`.
-- Analista: `analista1@bancomnm.xyz` o `analista2@bancomnm.xyz`; contraseña `Analista123!`.
-
-Desactiva `SEED_DEMO_DATA` y cambia todos los secretos antes de cualquier despliegue real.
-
-## Esquema de base de datos
-
-`database/init/01-create-databases.sh` crea `banco_db`; PostgreSQL crea `auth_db` desde `POSTGRES_DB`. Cada API crea sus tablas al arrancar mediante SQLAlchemy (`Base.metadata.create_all`). El modelo `usuarios` vive en `auth_db`; `cuentas` y `transacciones`, en `banco_db`.
-
-| Base | Tabla | Columnas y restricciones |
-| --- | --- | --- |
-| `auth_db` | `usuarios` | `id INTEGER` PK; `email VARCHAR(255)` único e indexado; `password_hash VARCHAR(255)`; `role VARCHAR(20)` indexado; `account_id INTEGER` nullable. |
-| `banco_db` | `cuentas` | `id INTEGER` PK; `opened_on DATE`; `username VARCHAR(80)` nullable y único. |
-| `banco_db` | `transacciones` | `id INTEGER` PK; `account_id INTEGER` FK a `cuentas.id` e indexado; `date DATE` indexada; `type VARCHAR(10)` indexado; `operation VARCHAR(100)`; `amount NUMERIC(14,2)`; `balance_after NUMERIC(14,2)`; `category VARCHAR(100)` indexada. |
-
-`account_id` en `usuarios` no es una FK: AUTH y BANCO guardan sus datos en bases separadas. La relación de transacciones con cuentas sí está declarada como FK dentro de `banco_db`. `username` permite resolver el alias de destino de una transferencia y admite `NULL` para cuentas históricas sin alias.
-
-## Transferir dinero
-
-Inicia sesión como cliente y abre **Transferir**. Elige un alias disponible, indica el importe en COP y confirma. Los alias demo son `cliente1`, `cliente2`, etc.; actualmente son la parte anterior a `@` del correo. La API solo ofrece como destinatarios otras cuentas con alias.
-
-El backend identifica la cuenta de origen por el JWT, no por un ID enviado desde el navegador. Valida que el destinatario exista, que sea otra cuenta y que haya saldo suficiente. Registra un débito al emisor y un crédito al destinatario en una única transacción PostgreSQL; si falla una operación, no se confirma ninguna. El nuevo saldo aparece en el resumen y ambos apuntes quedan en los movimientos.
-
-API para clientes:
-
-```text
-GET  /api/cliente/destinatarios
-POST /api/cliente/transferencias
-```
-
-Ejemplo del cuerpo de la petición `POST`:
-
-```json
-{
-  "destinatario": "cliente2",
-  "monto": "1250.00"
-}
-```
-
-El token se envía en `Authorization: Bearer <token>`. Se rechazan destinatarios inexistentes, envíos a la propia cuenta e importes mayores que el saldo. Las rutas y filtros restantes están en [BANCO_MNM.md](BANCO_MNM.md).
-
-## Pruebas
-
-Desde la raíz del repositorio, en PowerShell:
+Para borrar también los datos persistidos (irreversible):
 
 ```powershell
-python -m pip install -r app/requirements-dev.txt
+docker compose down -v
+```
+
+## Interfaces
+
+| Servicio             | URL                        | Acceso                                       |
+| -------------------- | -------------------------- | -------------------------------------------- |
+| Aplicación          | http://localhost:8080      | Frontend y APIs vía Nginx                   |
+| AUTH API             | http://localhost:8001/docs | Documentación OpenAPI                       |
+| BANCO API            | http://localhost:8002/docs | Documentación OpenAPI                       |
+| Airflow              | http://localhost:8083      | Usuario/contraseña configurados en `.env` |
+| HDFS NameNode        | http://localhost:9870      | Estado de HDFS                               |
+| YARN ResourceManager | http://localhost:8088      | Estado de jobs/recursos                      |
+| MapReduce History    | http://localhost:19888     | Historial de jobs                            |
+
+Los servicios de Hadoop y las APIs se publican solo en loopback en Compose; la interfaz bancaria usa el puerto `HTTP_PORT` (8080 por defecto).
+
+El frontend ofrece resumen de saldo, ingresos y egresos, lecturas descriptivas del historial, gráficos y movimientos recientes. Sus términos y aviso de privacidad son informativos para el prototipo: no existe canal de atención de derechos ni registro de autorización legal. No uses datos reales; antes de producción se deben definir el responsable, sus datos de contacto y los procesos de protección de datos, con revisión jurídica.
+
+## ETL medallón con Airflow
+
+Activa el DAG `bancomnm_mapreduce_pipeline` si aparece pausado y ejecútalo desde PowerShell:
+
+```powershell
+docker compose exec airflow-webserver airflow dags unpause bancomnm_mapreduce_pipeline
+docker compose exec airflow-webserver airflow dags trigger bancomnm_mapreduce_pipeline
+```
+
+El DAG sigue estas capas:
+
+- **Bronze:** copia sin transformar del JSON original en `/bancomnm/bronze/transacciones/sha256=<hash>/dataset.json`. Las rutas por hash conservan versiones distintas de la fuente.
+- **Silver:** `/bancomnm/silver/transacciones/dataset.jsonl`, normalizada y validada en streaming. El reporte de calidad queda en `/bancomnm/silver/quality_report.json`; los datos rechazados se conservan en `/bancomnm/silver/quarantine/`. Si hay filas inválidas, el DAG falla antes de ejecutar Gold.
+- **Gold:** resultados MapReduce en `/bancomnm/gold/job1_categoria`, `job2_fraude`, `job3_clientes` y `job4_mensual`.
+- **Dashboard:** el DAG valida los conteos de Gold, prepara un resumen pequeño y lo publica transaccionalmente en PostgreSQL. El panel Analista muestra la calidad de los 1.000.000 de registros, monto aprobado por categoría, fraude por ciudad, actividad mensual por canal y los 10 clientes con mayor monto aprobado. Es analítica global del dataset, no información personal de cuentas bancarias.
+
+Consulta las capas y los agregados desde PowerShell:
+
+```powershell
+docker compose exec namenode hdfs dfs -ls -R /bancomnm/bronze
+docker compose exec namenode hdfs dfs -cat /bancomnm/silver/quality_report.json
+docker compose exec namenode hdfs dfs -cat /bancomnm/gold/job1_categoria/part-*
+docker compose exec namenode hdfs dfs -cat /bancomnm/gold/job2_fraude/part-*
+docker compose exec namenode hdfs dfs -cat /bancomnm/gold/job3_clientes/part-*
+docker compose exec namenode hdfs dfs -cat /bancomnm/gold/job4_mensual/part-*
+```
+
+Consulta las ejecuciones en Airflow (`http://localhost:8083`), YARN (`http://localhost:8088`) y el historial de MapReduce (`http://localhost:19888`). Silver y los archivos Gold para análisis también se publican en el volumen compartido `airflow_data`.
+
+## Notebook de análisis exploratorio
+
+Con el stack levantado y una ejecución exitosa del DAG, inicia el servicio opcional de Jupyter:
+
+```powershell
+docker compose --profile analysis up --build -d notebook
+docker compose logs notebook
+```
+
+Abre `http://localhost:8889` usando el token que aparece en los logs y abre `eda_medallion.ipynb`. El notebook **no ejecuta la ETL ni crea las capas**: solo lee `/data/silver` y `/data/gold` (publicadas previamente por Airflow en `airflow_data`), escanea Silver en fragmentos de 100.000 filas y grafica los agregados Gold. El servicio solo se inicia al activar el perfil `analysis`; para detenerlo ejecuta `docker compose stop notebook`.
+
+Al reprocesar, Bronze se conserva por hash de contenido; Silver y Gold reflejan la última ejecución exitosa.
+
+## Docker Swarm
+
+`docker-stack.yml` despliega la plataforma completa en modo Swarm. Requiere que las imágenes de la aplicación, Hadoop (con Python para los mappers) y Airflow estén disponibles en todos los nodos. Construye las imágenes con Compose, publícalas en un registry y configura `APP_IMAGE`, `HADOOP_IMAGE` y `AIRFLOW_IMAGE` con las referencias publicadas. `docker stack deploy` no construye imágenes ni carga automáticamente el archivo `.env`.
+
+Construye las imágenes y publícalas en un registry accesible desde cada nodo. Ejecuta estos pasos en un manager Linux con el repositorio y el dataset disponibles localmente:
+
+```bash
+set -a
+source .env
+set +a
+export APP_IMAGE=registry.example/bancomnm/app:1.0
+export HADOOP_IMAGE=registry.example/bancomnm/hadoop:1.0
+export AIRFLOW_IMAGE=registry.example/bancomnm/airflow:1.0
+export DATASET_HOST_PATH="$PWD/dataset_transacciones_1_millon.json"
+docker compose build auth namenode airflow-init
+docker compose push auth namenode airflow-init
+docker node update --label-add bancomnm-data=true "$(docker node ls --filter role=manager --format '{{.ID}}' | head -n 1)"
+docker stack deploy -c docker-stack.yml bancomnm
+```
+
+Al usar Swarm, configura en la terminal las variables de `.env` (`POSTGRES_PASSWORD`, `JWT_SECRET`, secretos de Airflow y referencias de imagen) antes del despliegue. Las rutas de `dataset`, `frontend`, `nginx` y `database/init` deben existir en el manager Linux.
+
+El stack coloca las bases de datos, HDFS y Airflow en el nodo etiquetado porque sus volúmenes usan almacenamiento local. Las APIs son replicables:
+
+```powershell
+docker service scale bancomnm_auth=3 bancomnm_bank=3
+docker stack services bancomnm
+docker stack rm bancomnm
+```
+
+Esto es una configuración educativa de nodo único para los servicios con estado, no alta disponibilidad. Para distribuir HDFS entre nodos, configura almacenamiento persistente accesible por nodo y ajusta las restricciones de colocación. No publiques los puertos de Hadoop/Airflow ni uses esta configuración sin TLS, gestión de secretos y controles de red en producción.
+
+## Desarrollo y pruebas
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r app/requirements-dev.txt
 $env:PYTHONPATH = (Resolve-Path app).Path
-python -m pytest app/tests -q
+.\.venv\Scripts\python.exe -m pytest app/tests airflow/dags/utils/test_publish_dashboard.py -q
 ```
 
-Las pruebas usan SQLite temporal y no necesitan arrancar los contenedores.
+El entorno virtual evita que versiones globales incompatibles de FastAPI, Starlette o HTTPX afecten las pruebas.
+La prueba local de mappers/reducers está descrita en [`mapreduce/README.md`](mapreduce/README.md). La prueba de API usa SQLite temporal; para integración real se necesita el stack Compose.
 
-### Evidencias de ejecución en Windows
-
-Salida real de pytest ejecutado desde PowerShell en la raíz del repositorio:
+## Estructura
 
 ```text
-....                                                                     [100%]
-4 passed in 4.21s
+.
+├── airflow/
+│   ├── Dockerfile
+│   └── dags/
+├── notebooks/              # Notebook EDA y servicio Jupyter opcional
+├── app/
+├── database/init/
+├── hadoop/                 # Configuración de HDFS, YARN y MapReduce
+├── mapreduce/              # Mappers, reducers y pruebas locales
+├── docker-compose.yml      # Desarrollo: banca + Hadoop + Airflow
+├── docker-stack.yml        # Despliegue Docker Swarm
+└── dataset_transacciones_1_millon.json
 ```
-
-Salida real de las llamadas autenticadas al gateway Vagrant desde Windows PowerShell:
-
-```text
-WINDOWS_HEALTH=ok; LOGIN_ROLE=cliente; SUMMARY=ok; AVAILABLE_RECIPIENTS=4
-HEALTH=ok; ROLE=cliente; TRANSFER=completada; RECIPIENT=cliente2; AMOUNT=1.25
-```
-
-Captura real del dashboard después de iniciar sesión como cliente en el servidor local de Vagrant:
-
-![Dashboard Banco MNM abierto desde Windows en localhost:8081](docs/evidence/windows-client-dashboard.png)
-
-La captura muestra la interfaz autenticada; la salida de pytest se conserva arriba como texto para que sea copiable y verificable. Para generar evidencia nueva, repite los comandos de las secciones Vagrant y Pruebas en tu propio equipo.
